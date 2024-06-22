@@ -1,0 +1,115 @@
+#When a customer fill out a credit application form, we collect information but we do not know for 
+#sure whether she or he will eventually default. A credit risk model can help us in this task.
+rm(list = ls())
+library(dplyr)
+library(ggplot2)
+
+dat<- readRDS("~/loan_data_ARF.rds")
+str(dat)
+#The column names is long therefore shortening them
+old_names <- colnames(dat)
+colnames(dat) <- c("loan_st", "l_amnt", "int", "grade", "emp_len", 
+                   "home", "income", "age", "sex", "region")
+data.frame(old_names, "new_names" = colnames(dat))
+
+dat -> View1
+#Checking the binomiality of the data
+skimr::skim(dat) -> View2
+
+#Creating a crosstable
+descr::CrossTable(dat$home)
+
+#Plotting interest rate with density
+ggplot(dat, aes(x = int)) + 
+  geom_histogram(aes(y=..density..), binwidth = 0.5, colour = "black", 
+                 fill = "white") +
+  labs(y = "Density", x = "Interest rate") +
+  theme(legend.position = "bottom", legend.title = element_blank())
+
+#Exploring the age outliers
+age_outlier_high <- dat %>% filter(age >= 85) %>%  select(age); age_outlier_high
+#The code above shows applicants who are more than 94 even 144. We need to get rid of them
+
+age_outlier_low <- dat %>% filter(age <= 18) %>%  select(age); age_outlier_low
+#luckily now one is below 18 years of age
+
+#Remove the rows with agre outlier
+dat <- dat %>% filter(age != age_outlier_high$age); rm(age_outlier_high)
+
+#Exploring the income outliers
+high_income <- dat[(dat$income > 1000000), ]
+high_income_index <- data.frame(value = as.integer(rownames(high_income)))
+dat <- dat[-high_income_index$value,]
+rm(high_income_index)
+
+#In this case, the binary dependent variable is default (1) or no default (0)
+#randomly selects rows to form the train. The test are the remaining rows
+# It is convenient to set the loan status as factor.
+dat$loan_st <- as.factor(dat$loan_st)
+set.seed(42)
+index_train <- cbind(runif(1 : nrow(dat), 0 , 1), c(1 : nrow(dat)))
+index_train <- order(index_train[, 1])
+index_train <- index_train[1: (2/3 * nrow(dat))]
+# Create training set
+train <- dat[index_train, ]
+# Create test set
+test <- dat[-index_train, ]
+
+#Training the data using glm
+# Fitting a simple logistic model.
+logi_age <- glm(loan_st ~ age, family = "binomial", data = train)
+logi_age
+
+# Build a glm model with variable interest rate as a predictor.
+logi_int <- glm(formula = loan_st ~ int, family = "binomial", data = train)
+# Print the parameter estimates.
+logi_int
+
+#The AIC is a lower (13,220 versus 13,580), so we have a better model now.
+
+# Multiple variables in a logistic regression model.
+logi_multi <- glm(loan_st ~ age + int + grade + log(l_amnt) + 
+                    log(income) , family = "binomial", data = train)
+# Obtain significance levels using summary().
+summary(logi_multi)
+
+#Let us do some predict on one applicant from test set
+# Define one single observation in test_set.
+John_Doe <- as.data.frame(test[1, ])
+
+
+# Predict the loan status.
+logi_age_pred <- predict(logi_age, newdata = John_Doe, type = "response")
+logi_int_pred <- predict(logi_int, newdata = John_Doe, type = "response")
+logi_multi_pred <- predict(logi_multi, newdata = John_Doe, type = "response")
+# Collect all.
+pred_John <- rbind("logi_age" = logi_age_pred, 
+                   "logi_int" = logi_int_pred, 
+                   "logi_multi" = logi_multi_pred)
+# Prepare a table.
+colnames(pred_John) <- "Loan status predictions for John Doe."
+pred_John
+
+#These values are low as they are close to 0. Which correctly corresponds to what was original outcome
+# > John_Doe$loan_st
+# [1] 0
+# Levels: 0 1
+
+#Prediction from all test set
+# Predict the loan status with the three models.
+pred_logi_age <- predict(logi_age, newdata = test, type = "response")
+pred_logi_int <- predict(logi_int, newdata = test, type = "response")
+pred_logi_multi <- predict(logi_multi, newdata = test, 
+                           type = "response")
+
+pred_range <- rbind("logi_age" = range(pred_logi_age), 
+                    "logi_int" = range(pred_logi_int),
+                    "logi_multi" = range(pred_logi_multi))
+aic <- rbind(logi_age$aic, logi_int$aic, logi_multi$aic)
+pred_range <- cbind(pred_range, aic)
+colnames(pred_range) <- c("min(loan_st)", "max(loan_st)", "AIC")
+pred_range
+
+#Narrow ranges (the difference between higher and lower loan_st predicted values) could be problematic because 
+#the model could not be able to discriminate between defaults (predictions closer to 1) and no-defaults (predictions 
+#closer to 0). 
